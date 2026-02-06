@@ -270,3 +270,502 @@ Calitatea și profunzimea sunt mai importante decât concizia.
 
 
 
+
+# The Good Engineer – Tech Innovation
+## Re-Design Arhitectură Db2: De la pureScale la HADR
+### Ghid de prezentare – Slide cu Slide (~15 minute)
+
+---
+
+---
+
+## SLIDE 1 – Pagina de Titlu
+
+### **Re-Designul Arhitecturii de Baze de Date Enterprise**
+### **De la IBM Db2 pureScale la Db2 HADR**
+
+**Program:** The Good Engineer – Tech Innovation
+
+**Categorie:** Tech Innovation
+
+**Mesaj central:**
+> *Cum o decizie inginerească a eliminat €350K/an în costuri de licențiere, a redus timpul de Disaster Recovery de la ore la secunde și a simplificat radical operațiunile pe întreaga platformă ECM.*
+
+---
+
+---
+
+## SLIDE 2 – Context Business și Tehnic
+
+### **De unde am pornit**
+
+- **Platforma:** IBM Enterprise Content Management (ECM)
+  - Platformă critică de gestionare a documentelor la nivel de organizație
+  - Deservește multiple linii de business
+  - Layer-ul de baze de date: **IBM Db2** pe AIX
+
+- **Criticitate business:**
+  - ECM este o aplicație **Tier-1** — orice downtime are impact direct asupra operațiunilor
+  - Cerințe stricte de reglementare și conformitate impun capabilități DR robuste
+  - Integritatea și disponibilitatea datelor sunt non-negociabile
+
+- **Scală:**
+  - Multiple baze de date, inclusiv **CUSTOS** (cea mai mare) și **BSUPOD** (a doua ca dimensiune)
+  - Volume semnificative de date cu workload-uri tranzacționale continue
+  - Două site-uri fizice de data center: **PROD** și **DR**
+
+- **Model operațional:**
+  - Gestionat de echipe cross-funcționale: DBA, AIX, Storage, Middleware
+  - Orice schimbare de infrastructură necesita coordonare între mai multe echipe
+  - Procedurile de DR erau manuale, complexe și rareori testate end-to-end
+
+---
+
+---
+
+## SLIDE 3 – Problema Adresată
+
+### **O problemă clară și măsurabilă**
+
+**1. Cost extrem de licențiere**
+- Licențiere Db2 pureScale: **~€350.000/an**
+- Cost determinat de numărul de servere member impus de topologia pureScale
+- Niciun beneficiu business proporțional cu costul suplimentar
+
+**2. Arhitectură supradimensionată**
+- 8 servere în total (4 per site) pentru un workload care nu necesita clustering shared-disk
+- Modelul shared-disk al pureScale a introdus o complexitate mult peste cerințele reale ale platformei ECM
+
+**3. Disaster Recovery era o vulnerabilitate, nu o plasă de siguranță**
+- Activarea DR presupunea:
+  - Oprirea completă a site-ului PROD
+  - Sincronizare manuală la nivel de storage (cutover SAN mirroring)
+  - Pornire manuală a tuturor instanțelor Db2 în DR
+- **RTO măsurat în ore** — inacceptabil pentru o platformă Tier-1
+- DR-ul nu era niciodată o operațiune sigură și predictibilă
+
+**4. Risc operațional și dependențe între echipe**
+- Fiecare test sau activare DR necesita coordonarea simultană a **3+ echipe**
+- Risc ridicat de eroare umană la fiecare pas
+- Nicio echipă nu avea ownership complet asupra procesului de DR
+
+---
+
+---
+
+## SLIDE 4 – Arhitectura Veche: IBM Db2 pureScale
+
+### **Cum arăta înainte**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                      SITE PROD                          │
+│                                                         │
+│   ┌──────────────┐  ┌──────────────┐                    │
+│   │  Db2 Member  │  │  Db2 Member  │   (Active/Active)  │
+│   │   Server 1   │  │   Server 2   │                    │
+│   └──────┬───────┘  └──────┬───────┘                    │
+│          │                 │                             │
+│   ┌──────┴───────┐  ┌─────┴────────┐                    │
+│   │   Cluster    │  │   Cluster    │   (Coordonare      │
+│   │  Facility 1  │  │  Facility 2  │    Shared-Disk)    │
+│   └──────────────┘  └──────────────┘                    │
+│          │                 │                             │
+│   ┌──────┴─────────────────┴───────┐                    │
+│   │      Storage SAN Partajat      │                    │
+│   └────────────────────────────────┘                    │
+└─────────────────────────────────────────────────────────┘
+            │  (Replicare SAN Manuală)
+            ▼
+┌─────────────────────────────────────────────────────────┐
+│                      SITE DR                            │
+│       (Topologie pureScale identică – 4 servere)        │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Caracteristici cheie:**
+- **8 servere** pe 2 site-uri (4 PROD + 4 DR)
+- Arhitectură shared-disk cu dependență de SAN
+- Servere Cluster Facility (CF) pentru lock management și coordonare cache
+- Site-ul DR = cold standby (nu era sincronizat continuu la nivel de bază de date)
+
+---
+
+---
+
+## SLIDE 5 – Limitările Arhitecturii Vechi
+
+### **De ce pureScale nu era potrivit**
+
+| Dimensiune | Problemă |
+|---|---|
+| **Cost** | €350K/an doar pentru licențiere Db2 pureScale — generat de cei 4 memberi activi per site |
+| **Complexitate** | Clustering-ul shared-disk necesită cunoștințe specializate: tuning CF, GPFS, rețelistică RDMA |
+| **Proces DR** | Complet manual: oprire PROD → sincronizare storage → pornire DR. Ore de downtime, echipe multiple |
+| **RTO** | Măsurat în **ore** — incompatibil cu așteptările SLA ale unei platforme Tier-1 |
+| **Risc operațional** | Fiecare eveniment DR era o operațiune de mare stres, cu potențial semnificativ de eroare umană |
+| **Dependențe de echipe** | Echipele DBA + AIX + Storage toate necesare simultan pentru orice activitate DR |
+| **Scalabilitate operațională** | Adăugarea de baze de date sau modificarea workload-urilor necesita re-inginerie a layer-ului shared-disk |
+| **Testabilitate** | Testele DR erau rare, perturbatoare și adesea incomplete din cauza efortului operațional |
+
+**Concluzie:**
+> *Plăteam un cost premium pentru o arhitectură care transforma operațiunea noastră cea mai critică — Disaster Recovery — în cea mai slabă verigă.*
+
+---
+
+---
+
+## SLIDE 6 – Obiectivele Re-Design-ului
+
+### **Ce ne-am propus să realizăm**
+
+**Obiective principale:**
+
+1. **Reducerea drastică a costurilor de licențiere**
+   - Țintă: eliminarea completă a overhead-ului de licențiere pureScale
+   - Migrare către o topologie care licențiază doar ce utilizăm efectiv
+
+2. **RTO aproape de zero pentru Disaster Recovery**
+   - Țintă: failover în **secunde**, nu în ore
+   - Eliminarea sincronizării manuale de storage din procesul de DR
+
+3. **Simplificarea modelului operațional**
+   - Execuția DR de către o singură echipă (deținut și executat de DBA)
+   - Eliminarea dependențelor cross-team pentru operațiunile de rutină DR
+
+4. **Reducerea amprentei de infrastructură**
+   - Mai puține servere = costuri mai mici de hardware, mentenanță și operare
+   - Dimensionare corectă a arhitecturii în raport cu workload-ul real
+
+**Principii de design:**
+- Shared-nothing în locul shared-disk
+- Replicare nativă la nivel de bază de date în locul mirroring-ului la nivel de storage
+- Arhitectură pregătită pentru automatizare (failover printr-o singură comandă)
+- Performanță prin design, nu prin workaround-uri
+
+---
+
+---
+
+## SLIDE 7 – Arhitectura Nouă: IBM Db2 HADR
+
+### **Cum arată acum**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          SITE PROD                              │
+│                                                                 │
+│   ┌─────────────────────┐      ┌─────────────────────┐         │
+│   │   Db2 Server 1      │      │   Db2 Server 2      │         │
+│   │   Rol: PRIMARY      │      │   Rol: STANDBY      │         │
+│   │                     │      │   (Replicare Sync)   │         │
+│   │   ┌───────────────┐ │      │   ┌───────────────┐ │         │
+│   │   │ Storage Local │ │ ───► │   │ Storage Local │ │         │
+│   │   └───────────────┘ │      │   └───────────────┘ │         │
+│   └─────────────────────┘      └─────────────────────┘         │
+│              │                                                  │
+│              │  (HADR Log Shipping – Async)                     │
+└──────────────┼──────────────────────────────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                          SITE DR                                │
+│                                                                 │
+│   ┌─────────────────────┐      ┌─────────────────────┐         │
+│   │   Db2 Server 3      │      │   Db2 Server 4      │         │
+│   │   Rol: STANDBY      │      │   Rol: STANDBY      │         │
+│   │   (Repl. Async)     │      │   (Repl. Async)     │         │
+│   │   ┌───────────────┐ │      │   ┌───────────────┐ │         │
+│   │   │ Storage Local │ │      │   │ Storage Local │ │         │
+│   │   └───────────────┘ │      │   └───────────────┘ │         │
+│   └─────────────────────┘      └─────────────────────┘         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Topologie HADR: 1 Primary + 3 Standby**
+
+| Server | Site | Rol | Mod de Replicare |
+|--------|------|-----|------------------|
+| Server 1 | PROD | **Primary** | — |
+| Server 2 | PROD | Standby | **Sincron** (zero pierdere de date în cadrul site-ului) |
+| Server 3 | DR   | Standby | **Asincron** (cross-site, aproape real-time) |
+| Server 4 | DR   | Standby | **Asincron** (reziliență suplimentară) |
+
+**Caracteristici cheie:**
+- **4 servere în total** (redus de la 8)
+- **Shared-nothing** — fiecare server are propriul storage local
+- **Replicare continuă** la nivel de log de bază de date — fără implicarea echipei de Storage
+- **Comanda de failover:** `db2 takeover hadr on db <dbname>`
+- Fără SAN mirroring, fără GPFS, fără servere Cluster Facility
+
+---
+
+---
+
+## SLIDE 8 – Disaster Recovery: Înainte vs. După
+
+### **Transformarea care contează cel mai mult**
+
+| Aspect | Înainte (pureScale) | După (HADR) |
+|--------|---------------------|-------------|
+| **Declanșare failover** | Proces manual, cu pași multipli | O singură comandă: `db2 takeover hadr` |
+| **Echipe necesare** | DBA + AIX + Storage (3+ echipe) | **Doar DBA** |
+| **Sincronizare storage** | Cutover manual SAN mirroring | Replay continuu de log-uri HADR (automat) |
+| **RTO** | **Ore** | **Secunde – minute** |
+| **Risc pierdere date (RPO)** | Depinde de ultima sincronizare SAN reușită | Aproape zero (lag async de regulă < 1 sec) |
+| **Frecvență teste DR** | Rară (efort mare, risc mare) | Regulată (efort mic, risc mic) |
+| **Nivel de încredere** | Scăzut — prea multe componente în mișcare | **Ridicat — testat, predictibil, repetabil** |
+| **Rollback** | Complex și riscant | Reversare de rol HADR integrată nativ |
+
+**Decizia inginerească cheie:**
+> *Prin mutarea replicării de la nivelul de storage la nivelul bazei de date, am eliminat cea mai fragilă și complexă parte a lanțului DR — și am oferit ownership-ul complet echipei care înțelege cel mai bine datele: DBA-ilor.*
+
+---
+
+---
+
+## SLIDE 9 – Design de Performanță: Layout Filesystem-uri și Storage
+
+### **Proiectat pentru performanță, nu doar pentru disponibilitate**
+
+Ca parte a re-design-ului, am implementat un **layout dedicat de filesystem-uri** în care fiecare filesystem corespunde unui **disc fizic dedicat**, asigurând izolare completă a operațiunilor de I/O.
+
+**Arhitectura de filesystem-uri:**
+
+| # | Scop Filesystem | Rațiune de Design |
+|---|----------------|-------------------|
+| 1 | **Date bază de date CUSTOS** | Cea mai mare DB — disc dedicat elimină contention-ul de I/O |
+| 2 | **Date bază de date BSUPOD** | A doua ca dimensiune — izolată de workload-ul CUSTOS |
+| 3 | **Date baze de date mici** | Consolidate pe un singur disc (footprint I/O redus) |
+| 4 | **Transaction logs CUSTOS** | Separate de date — critice pentru performanța de scriere |
+| 5 | **Transaction logs BSUPOD** | Separate de date — asigură latență consistentă la scriere log |
+| 6 | **Transaction logs BD mici** | Scrieri de log izolate pentru bazele de date rămase |
+| 7 | **Log-uri de arhivă** | Disc dedicat pentru arhivare log-uri — fără interferență cu workload-urile active |
+| 8 | **Backup-uri** | I/O de backup izolat — previne impactul backup-urilor asupra producției |
+
+**De ce contează:**
+
+- **Izolare I/O:** Niciun filesystem nu concurează cu altul pentru lățimea de bandă a discului
+- **Performanță predictibilă:** Fiecare tip de workload (date, log-uri, backup) are capacitate I/O garantată
+- **Recovery mai rapid:** Transaction logs pe discuri dedicate = replay de log mai rapid în timpul sincronizării HADR
+- **Claritate operațională:** Mapare clară între filesystem → scop → resursă fizică
+
+> *Aceasta nu este doar o migrare — este un redesign ingineresc al performanței, de la nivelul de storage în sus.*
+
+---
+
+---
+
+## SLIDE 10 – Detalii de Implementare Tehnică
+
+### **Cum am construit soluția**
+
+**Configurare HADR:**
+- Db2 HADR configurat în mod **SUPERASYNC** pentru nodurile standby cross-site
+- Mod **SYNC** între cele două servere din site-ul PROD pentru zero pierdere de date în cadrul site-ului primar
+- Log shipping-ul este continuu și automat — fără job-uri planificate, fără ferestre de batch
+- HADR peer window configurat pentru a echilibra protecția datelor cu performanța
+
+**Abordarea migrării:**
+- Strategie de migrare cu zero-downtime utilizând Db2 backup/restore + inițializare HADR
+- Bazele de date migrate una câte una pentru a minimiza riscul
+- Plan de rollback menținut la fiecare etapă — fără cutover de tip big-bang
+
+**Automatizare și operabilitate:**
+- Failover-ul este o **singură comandă DBA**: `db2 takeover hadr on db <dbname>`
+- Monitorizare integrată cu stack-ul enterprise existent
+- Metrici de status HADR și lag urmărite continuu
+- Runbook-uri simplificate: de la proceduri multi-pagină cross-team la playbook-uri de o pagină, doar pentru DBA
+
+**Validare și testare:**
+- Failover DR complet testat cu succes de mai multe ori înainte de producție
+- Benchmark-uri de performanță au confirmat absența degradării față de pureScale sub workload-uri echivalente
+- Latența de log replay consistent sub 1 secundă în operațiuni normale
+
+**Decizii tehnice cheie:**
+- Am ales **shared-nothing** în locul shared-disk pentru a elimina SAN-ul ca punct unic de complexitate
+- Am ales **replicare la nivel de bază de date** în locul mirroring-ului la nivel de storage pentru DR — mai granulară, mai controlabilă
+- Am proiectat layout-ul de filesystem-uri **înainte** de migrare — performanța a fost o cerință de primă clasă, nu o optimizare ulterioară
+
+---
+
+---
+
+## SLIDE 11 – Impact Financiar
+
+### **Cifre concrete, economii reale**
+
+**Reducere costuri de licențiere:**
+
+| Element | Înainte | După | Economie |
+|---------|---------|------|----------|
+| Licență Db2 pureScale (anuală) | **~€350.000/an** | **€0** (Db2 HADR standard — inclus în licența de bază) | **€350.000/an** |
+| Economie proiectată pe 5 ani | — | — | **€1.750.000** |
+
+**Reducere costuri de infrastructură:**
+
+| Element | Înainte | După | Reducere |
+|---------|---------|------|----------|
+| Total servere | 8 | **4** | **Reducere 50%** |
+| Servere Cluster Facility | 4 (specializate) | **0** | **Eliminate 100%** |
+| Infrastructură SAN shared-disk | Necesară (GPFS) | **Nu este necesară** | Storage simplificat |
+| Overhead operațional | Ridicat (3+ echipe pentru DR) | **Scăzut** (doar DBA) | Economie semnificativă de resurse umane |
+
+**Costul Total de Deținere (TCO):**
+- Economie directă de licențiere: **€350K/an**
+- Reducere infrastructură: cu 50% mai puține servere de întreținut, actualizat și operat
+- Economii operaționale: mai puține ore-om per eveniment DR, mai puține echipe implicate
+- **Economie totală anuală estimată: €400K+** incluzând eficiențele operaționale
+
+> *Aceasta nu este un exercițiu de optimizare a costurilor — este o eliminare structurală a costurilor inutile prin inginerie mai bună.*
+
+---
+
+---
+
+## SLIDE 12 – Impact Operațional
+
+### **Mai simplu, mai sigur, mai rapid**
+
+**Operațiuni de Disaster Recovery:**
+
+| Metrică | Înainte | După | Îmbunătățire |
+|---------|---------|------|--------------|
+| RTO | Ore | **Secunde – Minute** | **Reducere ~99%** |
+| Echipe necesare pentru DR | 3+ (DBA, AIX, Storage) | **1 (DBA)** | **Ownership complet DBA** |
+| Pași în procedura DR | 15+ pași manuali | **1 comandă** | **Cu 95% mai puțini pași** |
+| Frecvența testelor DR | Rară | **Regulată** | Testabil și predictibil |
+
+**Operațiuni zilnice:**
+
+- **Monitorizare simplificată:** Status-ul HADR vizibil prin comenzi standard Db2 și tool-uri de monitorizare
+- **Patching și mentenanță:** Mentenanță rolling posibilă — se aplică patch pe standby mai întâi, failover, apoi patch pe fostul primary
+- **Planificare capacitate:** Modelul shared-nothing face planificarea capacității simplă — fără analiză de bottleneck pe shared-disk
+- **Onboarding:** DBA-ii noi pot înțelege și opera arhitectura semnificativ mai rapid
+
+**Reducerea riscului:**
+
+- Am eliminat dependența de mirroring la nivel de storage pentru DR (cel mai mare factor de reducere a riscului)
+- Am eliminat Cluster Facility ca domeniu potențial de defecțiune
+- Am redus raza de impact: o defecțiune pe un server nu se propagă prin infrastructura partajată
+- DR-ul este acum o **operațiune practicată și executată cu încredere** — nu o procedură de urgență de mare stres
+
+> *Cel mai bun proces de DR este cel pe care echipa ta îl poate executa cu încredere la 3 dimineața, fără să sune pe nimeni altcineva.*
+
+---
+
+---
+
+## SLIDE 13 – Scalabilitate și Reutilizare
+
+### **Construit să scaleze, proiectat să fie reutilizat**
+
+**Scalabilitate:**
+
+- **Adăugare noduri standby:**
+  - Servere standby noi pot fi adăugate la topologia HADR fără a afecta primary-ul
+  - Suportă până la 3 noduri standby per bază de date (utilizăm toate 3 astăzi)
+  - Data center-e viitoare pot fi integrate ca ținte standby suplimentare
+
+- **Creșterea volumului de date:**
+  - Modelul shared-nothing scalează liniar — se adaugă storage pe serverele individuale după necesitate
+  - Fără bottleneck de shared-disk de re-inginerizat când volumele de date cresc
+  - Layout-ul de filesystem-uri poate fi extins cu discuri dedicate suplimentare
+
+- **Scalare workload:**
+  - Workload-urile de citire pot fi descărcate pe nodurile standby (funcția Db2 HADR Reads on Standby)
+  - Potențial pentru workload-uri viitoare de raportare sau analiză pe serverele DR în timpul operațiunilor normale
+
+**Reutilizare:**
+
+- **Pattern pentru alte platforme:**
+  - Această arhitectură și abordare de migrare poate fi replicată pentru **orice aplicație bazată pe Db2** din organizație
+  - Design-ul layout-ului de filesystem-uri este un template reutilizabil pentru deployment-uri Db2 orientate pe performanță
+
+- **Runbook-uri și proceduri:**
+  - Runbook-urile simplificate de DR sunt reutilizabile între medii
+  - Configurațiile de monitorizare sunt template-izate și portabile
+
+- **Transfer de cunoștințe:**
+  - Deciziile inginerești și trade-off-urile documentate în acest proiect servesc drept **arhitectură de referință** pentru viitoarele deployment-uri Db2
+  - Reduce timpii proiectelor viitoare oferind un design dovedit și validat
+
+> *Aceasta nu este o reparație punctuală — este un pattern ingineresc repetabil pentru întreaga organizație.*
+
+---
+
+---
+
+## SLIDE 14 – De Ce Aceasta Este o Inovație Tehnică
+
+### **Inovație prin decizii inginerești**
+
+**Acest proiect nu este inovativ pentru că am folosit tehnologie nouă.**
+**Este inovativ pentru că am luat decizii inginerești mai bune cu tehnologia existentă.**
+
+**1. Am contestat o arhitectură consacrată**
+- Db2 pureScale era „standardul enterprise" — era acceptat, nu chestionat
+- Am analizat cerințele reale ale workload-ului și am demonstrat că capabilitățile pureScale nu erau necesare pentru acest caz de utilizare
+- Curajul de a simplifica este în sine o inovație inginerească
+
+**2. Am mutat replicarea de la nivelul de storage la nivelul bazei de date**
+- Aceasta este o schimbare arhitecturală fundamentală — nu o modificare de configurație
+- A eliminat o dependență completă de infrastructură (DR la nivel de SAN)
+- A oferit echipei potrivite (DBA) control complet asupra operațiunii celei mai critice (DR)
+
+**3. Am proiectat pentru performanță de la zero**
+- Layout-ul de filesystem-uri nu este o instalare implicită — este un **design construit cu scop precis, ingineresc orientat pe performanță**
+- Fiecare decizie de design (disc dedicat per filesystem, separare log/date) are o rațiune măsurabilă
+
+**4. Am livrat impact măsurabil și cuantificat**
+- €350K/an economie de licențiere — nu estimat, ci real
+- RTO de la ore la secunde — nu teoretic, ci testat
+- Reducere 50% a serverelor — nu planificat, ci livrat
+
+**5. Am creat un pattern reutilizabil**
+- Arhitectura, abordarea de migrare și modelul operațional sunt toate replicabile
+- Acest proiect ridică ștacheta inginerească pentru modul în care sunt proiectate platformele de baze de date în organizația noastră
+
+> *Inovația adevărată nu înseamnă să folosești cel mai nou tool — înseamnă să iei cea mai inteligentă decizie cu tool-urile pe care le ai.*
+
+---
+
+---
+
+## SLIDE 15 – Concluzii și Mesaje Cheie
+
+### **Ce am livrat**
+
+✅ **€350.000/an** în costuri de licențiere eliminate — proiecție **€1,75M pe 5 ani**
+
+✅ **RTO Disaster Recovery** redus de la **ore la secunde**
+
+✅ **Amprenta de servere** redusă cu **50%** (8 → 4 servere)
+
+✅ **Execuția DR** simplificată de la multi-echipă, multi-pas la **o singură comandă, o singură echipă**
+
+✅ **Layout de storage proiectat ingineresc** cu izolare completă I/O
+
+✅ **Pattern arhitectural reutilizabil** pentru viitoarele deployment-uri Db2 în organizație
+
+---
+
+### **Mesaje cheie pentru juriu**
+
+1. **Aceasta este o soluție reală, implementată în producție** — nu un POC, nu o propunere
+2. **Inovația constă în deciziile inginerești** — alegerea simplității în locul complexității, a replicării native la nivel de DB în locul dependenței de storage, a shared-nothing în locul shared-disk
+3. **Impactul este măsurabil și semnificativ** — financiar, operațional și din perspectiva reducerii riscului
+4. **Soluția scalează și poate fi reutilizată** — este un pattern, nu o soluție punctuală
+5. **Demonstrează ce înseamnă „Good Engineering"** — să chestionezi asumpțiile, să simplifici arhitecturile și să livrezi valoare business prin excelență tehnică
+
+---
+
+### **Mesaj de închidere**
+
+> *Am luat o platformă care era supradimensionată, supra-licențiată și fragilă operațional — și am reproiectat-o în ceva mai simplu, mai rapid, mai ieftin și mai rezilient. Aceasta este definiția Tech Innovation atunci când vine din disciplină inginerească, nu din hype.*
+
+---
+
+**Vă mulțumesc.**
+
+---
