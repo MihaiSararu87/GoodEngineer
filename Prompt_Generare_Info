@@ -769,3 +769,240 @@ Ca parte a re-design-ului, am implementat un **layout dedicat de filesystem-uri*
 **Vă mulțumesc.**
 
 ---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+SLIDE 2 – Context business și tehnic
+Platforma: IBM Enterprise Content Management (ECM)
+•	Aplicație Tier-1, critică pentru operațiuni și conformitate
+•	Impact direct asupra proceselor de business în caz de indisponibilitate
+Layer baze de date: IBM Db2
+•	Total 8 baze de date
+•	2 baze de date de dimensiuni mari, cu workload tranzacțional semnificativ
+•	Restul bazelor de date au dimensiuni mai mici, dar rulează în aceeași instanță și contribuie la încărcarea generală
+•	Cerințe ridicate de consistență, performanță și disponibilitate
+Infrastructură:
+•	Două site-uri fizice: PROD și DR
+•	Operare realizată de mai multe echipe: DBA, AIX, Middleware (ECM admin)
+Cerințe cheie:
+•	High Availability
+•	Disaster Recovery robust și repetabil
+•	Backup și recovery enterprise-grade
+•	Performanță predictibilă și control operațional
+________________________________________
+SLIDE 3 – Problema adresată
+O problemă clară și măsurabilă
+1. Cost ridicat de licențiere
+•	Db2 pureScale genera un cost suplimentar de aproximativ
+~350.000 EUR/an
+2. Arhitectură supradimensionată
+•	Model shared-disk, deși workload-ul ECM nu necesita capabilitățile specifice pureScale
+3. Disaster Recovery lent și riscant
+•	DR necesita:
+o	oprirea completă a site-ului PROD
+o	operațiuni manuale de sincronizare storage
+o	pornirea manuală în DR
+•	RTO: ore
+4. Procese operaționale fragmentate
+•	DR și recovery necesitau coordonare între 3+ echipe
+•	Risc ridicat de eroare umană
+Concluzie:
+Arhitectura era costisitoare, complexă și făcea DR și recovery procese greu de executat predictibil.
+________________________________________
+SLIDE 4 – Arhitectura veche: Db2 pureScale + GPFS
+Topologie:
+•	2 site-uri: PROD și DR
+•	Fiecare site:
+o	2 × Db2 Member servers
+o	2 × Cluster Facility (CF) servers
+Storage:
+•	Arhitectură shared-disk bazată pe
+IBM Spectrum Scale (GPFS)
+Caracteristici:
+•	CF-urile gestionau lock-uri și coerență cache
+•	Performanță bună local, dar cu complexitate ridicată
+•	DR dependent de operațiuni la nivel de storage / GPFS
+________________________________________
+SLIDE 5 – Limitările arhitecturii pureScale + GPFS
+•	Complexitate operațională mare
+o	Db2 + CF + GPFS + storage
+•	Disaster Recovery manual
+o	stop PROD
+o	cutover / sincronizare GPFS
+o	start DR
+•	RTO: ore
+•	Costuri ridicate
+o	licențe pureScale
+o	8 servere totale
+•	Testare DR dificilă
+•	Ownership fragmentat
+o	DBA + AIX + Storage implicați simultan
+Concluzie:
+DR și recovery erau exact operațiunile care necesitau cel mai mult efort și prezentau cel mai mare risc.
+________________________________________
+SLIDE 6 – Obiectivele re-design-ului
+Obiective principale:
+•	Eliminarea costului suplimentar pureScale
+•	DR rapid, repetabil, executabil de o singură echipă
+•	Simplificarea arhitecturii și a operațiunilor
+•	Integrare nativă cu soluții enterprise de backup
+•	Menținerea și îmbunătățirea performanței
+Principii de design:
+•	shared-nothing în loc de shared-disk
+•	replicare la nivel de bază de date, nu storage
+•	backup și log archiving integrate nativ
+•	procese simple, ușor de testat
+________________________________________
+SLIDE 7 – Arhitectura nouă: Db2 HADR
+Topologie:
+•	4 servere total
+o	2 în PROD
+o	2 în DR
+HADR:
+•	1 Primary
+•	3 Standby
+o	Standby local în PROD (HA)
+o	Standby-uri în DR (Disaster Recovery)
+Caracteristici:
+•	Arhitectură shared-nothing
+•	Storage local pe fiecare server
+•	Replicare continuă prin Db2 HADR (log shipping)
+•	Failover controlat prin:
+•	db2 takeover hadr on db <dbname>
+Ce s-a eliminat:
+•	GPFS
+•	CF servers
+•	DR dependent de storage
+________________________________________
+SLIDE 8 – Disaster Recovery: înainte vs după
+Înainte (pureScale + GPFS):
+•	Oprire completă PROD
+•	Sincronizare storage / GPFS
+•	Pornire DR
+•	3+ echipe implicate
+•	RTO: ore
+După (Db2 HADR):
+•	Replicare continuă la nivel Db2
+•	Failover executat de DBA
+•	O singură comandă
+•	2 echipe implicate
+•	RTO: secunde – minute
+Mesaj cheie:
+DR a devenit un proces standardizat, nu o intervenție de urgență.
+________________________________________
+SLIDE 9 – Design de performanță: layout filesystem-uri
+Layout filesystem-uri orientat pe I/O (fiecare pe disk fizic dedicat)
+Filesystem-uri pentru date:
+•	FS_DATA_LARGE_DB_1 – date bază de date mare
+•	FS_DATA_LARGE_DB_2 – date bază de date mare
+•	FS_DATA_SMALL_DBS – date baze de date mici
+Filesystem-uri pentru transaction logs:
+•	FS_LOG_LARGE_DB_1 – transaction logs DB mare
+•	FS_LOG_LARGE_DB_2 – transaction logs DB mare
+•	FS_LOG_SMALL_DBS – transaction logs baze mici
+Filesystem-uri operaționale:
+•	FS_ARCHIVE_LOGS – log-uri arhivate
+•	FS_BACKUPS – backup-uri baze de date
+Beneficii:
+•	izolare completă I/O, eliminarea contention-ului de I/O
+•	latență stabilă la scrierea transaction log-urilor
+•	replay HADR mai rapid
+•	backup fără impact major pe producție
+Acest layout nu este un detaliu de implementare, ci o decizie de arhitectură menită să crească performanța, stabilitatea și fiabilitatea platformei de baze de date.
+________________________________________
+SLIDE 10 – Integrarea cu TSM (Backup & Log Archiving)
+Soluție de backup: IBM Tivoli Storage Manager (TSM)
+Implementare:
+•	Backup online Db2 realizat direct din Primary către TSM
+•	Log archiving configurat către filesystem dedicat și preluat de TSM
+•	Backup-urile și log-urile sunt:
+o	independente de HADR
+o	consistente la nivel de bază de date
+o	disponibile pentru recovery punctual (PITR)
+Beneficii:
+•	Backup enterprise-grade, centralizat
+•	Integrare nativă Db2 + TSM
+•	Eliminarea backup-urilor manuale sau scriptate
+•	Recovery complet sau punctual, testabil și documentat
+________________________________________
+SLIDE 11 – Implementare tehnică (high-level)
+•	Pregătire infrastructură și layout storage
+•	Migrare controlată a bazelor de date
+•	Configurare HADR per DB
+•	Integrare TSM pentru backup și log archiving
+•	Monitorizare:
+o	status HADR
+o	lag replicare
+o	status backup și log archive
+•	Teste:
+o	failover HADR
+o	restore din TSM
+o	recovery din log-uri arhivate
+Operare:
+•	Runbook simplificat, deținut de DBA
+________________________________________
+SLIDE 12 – Impact financiar
+•	Eliminare cost suplimentar licențiere pureScale:
+~350.000 EUR/an
+•	Proiecție pe 5 ani:
+~1,75 milioane EUR
+•	Reducere infrastructură:
+8 → 4 servere
+•	Eficiență operațională crescută:
+o	mai puține ore-om
+o	mai puține echipe implicate
+________________________________________
+SLIDE 13 – Impact operațional
+•	RTO: ore → secunde/minute
+•	Complexitate: GPFS + CF → HADR + TSM
+•	Echipe: 3+ → 1 (DBA)
+•	Backup & recovery: complet integrat, testabil
+•	Mentenanță: patching și upgrade simplificate
+________________________________________
+SLIDE 14 – Riscuri și controale
+Riscuri identificate:
+•	latență rețea între site-uri
+•	lag HADR
+•	creștere volum log-uri
+Controale implementate:
+•	monitorizare HADR și alertare
+•	runbook takeover controlat
+•	teste periodice DR și restore din TSM
+•	capacity planning pentru log-uri și backup
+Rezultat:
+Am eliminat riscurile asociate shared-disk-ului și am consolidat backup & recovery într-un model standardizat.
+________________________________________
+SLIDE 15 – Scalabilitate și reutilizare
+•	Pattern reutilizabil pentru alte platforme Db2
+•	Standby-uri suplimentare pot fi adăugate ușor
+•	Layout de storage și integrare TSM reutilizabile
+•	Runbook-uri și monitorizare standardizate
+________________________________________
+SLIDE 16 – Concluzii
+Ce am livrat:
+•	~350.000 EUR/an economii reale
+•	DR rapid și predictibil
+•	50% reducere infrastructură
+•	Backup și log archiving enterprise-grade cu TSM
+•	Arhitectură mai simplă, mai sigură, mai ușor de operat
+Mesaj final:
+Inovația reală nu înseamnă mai multă tehnologie, ci arhitectură mai simplă, mai clară și mai bine controlată.
+
