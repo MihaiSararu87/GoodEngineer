@@ -458,7 +458,7 @@ Calitatea și profunzimea sunt mai importante decât concizia.
 │   ┌─────────────────────┐      ┌─────────────────────┐         │
 │   │   Db2 Server 1      │      │   Db2 Server 2      │         │
 │   │   Rol: PRIMARY      │      │   Rol: STANDBY      │         │
-│   │                     │      │   (Replicare Sync)   │         │
+│   │                     │      │(Replicare NearSync) │         │
 │   │   ┌───────────────┐ │      │   ┌───────────────┐ │         │
 │   │   │ Storage Local │ │ ───► │   │ Storage Local │ │         │
 │   │   └───────────────┘ │      │   └───────────────┘ │         │
@@ -474,7 +474,7 @@ Calitatea și profunzimea sunt mai importante decât concizia.
 │   ┌─────────────────────┐      ┌─────────────────────┐         │
 │   │   Db2 Server 3      │      │   Db2 Server 4      │         │
 │   │   Rol: STANDBY      │      │   Rol: STANDBY      │         │
-│   │   (Repl. Async)     │      │   (Repl. Async)     │         │
+│   │(Repl. SuperAsync)   │      │ (Repl. SuperAsync)  │         │
 │   │   ┌───────────────┐ │      │   ┌───────────────┐ │         │
 │   │   │ Storage Local │ │      │   │ Storage Local │ │         │
 │   │   └───────────────┘ │      │   └───────────────┘ │         │
@@ -1006,3 +1006,24 @@ Ce am livrat:
 Mesaj final:
 Inovația reală nu înseamnă mai multă tehnologie, ci arhitectură mai simplă, mai clară și mai bine controlată.
 
+
+
+
+
+
+
+Agenda
+
+Context & problemă
+
+Arhitectura veche (pureScale + GPFS)
+
+Obiectivele re-design-ului
+
+Arhitectura nouă (Db2 HADR)
+
+DR before vs. after
+
+Performanță, backup & recovery
+
+Impact și concluzii
